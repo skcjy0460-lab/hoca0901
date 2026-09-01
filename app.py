@@ -36,11 +36,11 @@ if license_required and not render_license_gate():
 
 pages = {
     "병원 조직도 설계 AI": [
-        st.Page("views/1_병원정보입력.py", title="1. 병원 정보 입력", icon="🏥", default=True),
-        st.Page("views/2_AI조직진단.py", title="2. AI 조직 진단", icon="🤖"),
-        st.Page("views/3_조직도편집기.py", title="3. 조직도 편집기", icon="🌳"),
-        st.Page("views/4_성장로드맵.py", title="4. 성장 단계 로드맵", icon="📈"),
-        st.Page("views/5_내보내기.py", title="5. 내보내기", icon="📤"),
+        st.Page("views/1_hospital_info.py", title="1. 병원 정보 입력", icon="🏥", default=True),
+        st.Page("views/2_ai_diagnosis.py", title="2. AI 조직 진단", icon="🤖"),
+        st.Page("views/3_org_chart_editor.py", title="3. 조직도 편집기", icon="🌳"),
+        st.Page("views/4_growth_roadmap.py", title="4. 성장 단계 로드맵", icon="📈"),
+        st.Page("views/5_export.py", title="5. 내보내기", icon="📤"),
     ]
 }
 

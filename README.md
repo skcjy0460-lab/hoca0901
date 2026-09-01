@@ -43,6 +43,8 @@ streamlit run app.py
 - `.streamlit/secrets.toml.example`을 참고해 앱 설정 → Secrets에 `GEMINI_API_KEY`를 등록하세요.
 - 유료 배포 시 `VALID_LICENSE_KEYS`를 등록하면 라이선스 키 입력 화면이 활성화됩니다
   (미등록 시 인증 없이 바로 사용 가능 — 로컬 개발/데모용).
+- `views/` 파일명은 Git/Windows 환경에서 한글 파일명이 깨지는 문제를 피하기 위해
+  영문(ASCII)으로 지정했고, 화면에 보이는 메뉴명은 `st.Page(title=...)`으로 한글을 그대로 씁니다.
 
 ## 폴더 구조
 
@@ -55,11 +57,11 @@ utils/
   export_utils.py             # Excel/PPTX/HTML 내보내기
   licensing.py                 # 라이선스 키 게이트
 views/
-  1_병원정보입력.py
-  2_AI조직진단.py
-  3_조직도편집기.py
-  4_성장로드맵.py
-  5_내보내기.py
+  1_hospital_info.py          # 병원 정보 입력
+  2_ai_diagnosis.py           # AI 조직 진단
+  3_org_chart_editor.py       # 조직도 편집기
+  4_growth_roadmap.py         # 성장 단계 로드맵
+  5_export.py                  # 내보내기
 requirements.txt
 packages.txt
 .streamlit/secrets.toml.example
