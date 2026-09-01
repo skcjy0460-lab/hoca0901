@@ -5,10 +5,15 @@ from utils.org_data import DEPT_TYPE_LIST
 from utils.org_chart_builder import (
     add_node, remove_node, get_descendants, tree_to_dot, tree_to_dataframe,
     total_headcount, span_of_control_warnings, detect_cycles, orphan_department_warnings,
+    NODE_KINDS,
 )
 
 st.title("🌳 조직도 편집기")
 st.caption("노드를 추가·수정·삭제하여 조직도를 자유롭게 편집하세요. 변경 사항은 즉시 아래 조직도에 반영됩니다.")
+st.caption(
+    "🏷️ **직급**(책임자 1인 — 원장·부장·팀장 등)은 조직도에 **이름 기입란**이, "
+    "🧩 **부서**(실무 팀 — 명단 다수)는 조직도에 **명단을 손으로 적는 빈 칸**이 표시됩니다."
+)
 
 info = st.session_state.get("hospital_info") or {}
 tree = st.session_state.get("org_tree") or {}
@@ -63,8 +68,12 @@ title_options.update({f"{n['title']}": n["id"] for n in tree.values()})
 with st.form("add_node_form", clear_on_submit=True):
     c1, c2 = st.columns(2)
     with c1:
-        new_title = st.text_input("직책/부서명", placeholder="예: 간호부장, 원무행정팀")
-        new_dept_type = st.selectbox("부서유형", DEPT_TYPE_LIST)
+        new_title = st.text_input("직책/부서명", placeholder="예: 간호부장, 외래간호팀")
+        new_dept_type = st.selectbox("부서유형(색상)", DEPT_TYPE_LIST)
+        new_kind = st.selectbox(
+            "구분", NODE_KINDS,
+            help="직급 = 책임자 1인(이름 기입란) · 부서 = 실무 팀(명단 기입 그리드)",
+        )
     with c2:
         new_parent_label = st.selectbox("상위 조직", list(title_options.keys()))
         new_headcount = st.number_input("배치 인원", min_value=0, value=1)
@@ -79,6 +88,7 @@ if add_submitted:
         add_node(
             tree, new_title.strip(), new_dept_type,
             title_options[new_parent_label], int(new_headcount), new_note.strip(),
+            kind=new_kind,
         )
         st.session_state["org_tree"] = tree
         st.session_state["current_tree_source"] = "manual"
@@ -98,7 +108,8 @@ else:
     sorted_nodes = sorted(tree.values(), key=lambda n: n["title"])
     for node in sorted_nodes:
         node_id = node["id"]
-        with st.expander(f"{node['title']} ({node['dept_type']}, {node['headcount']}명)"):
+        kind_badge = "🏷️ 직급" if node.get("kind", "부서") == "직급" else "🧩 부서"
+        with st.expander(f"{node['title']} · {kind_badge} · {node['dept_type']} · {node['headcount']}명"):
             forbidden_parents = set(get_descendants(tree, node_id)) | {node_id}
             parent_choices = {"(최상위 — 상위 조직 없음)": None}
             parent_choices.update({
@@ -115,9 +126,15 @@ else:
                 with ec1:
                     edit_title = st.text_input("직책/부서명", value=node["title"], key=f"title_{node_id}")
                     edit_dept_type = st.selectbox(
-                        "부서유형", DEPT_TYPE_LIST,
+                        "부서유형(색상)", DEPT_TYPE_LIST,
                         index=DEPT_TYPE_LIST.index(node["dept_type"]) if node["dept_type"] in DEPT_TYPE_LIST else 0,
                         key=f"dept_{node_id}",
+                    )
+                    edit_kind = st.selectbox(
+                        "구분", NODE_KINDS,
+                        index=NODE_KINDS.index(node.get("kind", "부서")) if node.get("kind") in NODE_KINDS else 1,
+                        key=f"kind_{node_id}",
+                        help="직급 = 책임자 1인(이름 기입란) · 부서 = 실무 팀(명단 기입 그리드)",
                     )
                 with ec2:
                     parent_labels = list(parent_choices.keys())
@@ -140,6 +157,7 @@ else:
             if save_clicked:
                 node["title"] = edit_title.strip() or node["title"]
                 node["dept_type"] = edit_dept_type
+                node["kind"] = edit_kind
                 node["parent_id"] = parent_choices[edit_parent_label]
                 node["headcount"] = int(edit_headcount)
                 node["note"] = edit_note.strip()

@@ -4,7 +4,7 @@ import streamlit as st
 
 from utils.ai_client import call_gemini_json, is_ai_configured
 from utils.org_data import DEPT_TYPE_LIST, SPAN_OF_CONTROL
-from utils.org_chart_builder import new_node_id
+from utils.org_chart_builder import new_node_id, NODE_KINDS
 
 st.title("🤖 AI 조직 진단 & 구조 추천")
 st.caption("입력된 병원 정보를 바탕으로 AI가 조직 구조 초안과 진단 코멘트를 생성합니다. "
@@ -32,7 +32,16 @@ SYSTEM_INSTRUCTION = f"""당신은 한국 병원 개원 및 경영 컨설팅 전
 [설계 원칙]
 - 통제범위(관리자 1인당 직속 부하 수)는 {SPAN_OF_CONTROL['권장_최소']}~{SPAN_OF_CONTROL['권장_최대']}명 범위를 권장 기준으로 삼되, 병원 규모에 맞게 유연하게 판단하세요.
 - 부서유형(dept_type)은 반드시 다음 목록 중 하나여야 합니다: {DEPT_TYPE_LIST}
+- kind는 반드시 다음 중 하나여야 합니다: {NODE_KINDS}
+  - "직급": 원장/부원장/부장/팀장 등 '책임자 1인' 자리. 조직도에는 이름을 적는 빈 줄이 표시됩니다.
+  - "부서": 실무 인력 여러 명이 소속되는 팀/과. 조직도에는 명단을 손으로 적는 빈 칸 그리드가 표시됩니다.
+  - 예: "간호부장"은 직급, 그 밑의 "외래간호팀"·"병동간호팀"·"수술실간호팀"은 부서.
 - 병상 규모가 작은 의원급은 과도하게 세분화하지 말고 실용적으로 설계하세요.
+- 병상 규모가 있는 병원급 이상은 아래와 같은 실무 관행을 최대한 반영해 세분화하세요 (병원 상황에 맞게 이름·구성은 조정 가능):
+  - 간호부장(직급) 아래에 외래간호팀 / 병동간호팀 / 수술실간호팀 등(부서)으로 세분화
+  - 진료지원 기능은 방사선과 / 임상병리과 등(부서)으로 세분화
+  - 원무 기능은 접수/수납/보험청구·심사를 포괄하는 "원무&심사팀"(부서)으로 구성하거나 필요시 분리
+  - 총무(인사/노무/구매 등)는 시설관리와 분리된 별도 "총무팀"(부서)으로 구성
 - 청구심사(보험심사) 기능은 가능하면 원무 기능과 분리하거나 명확한 담당을 지정하세요.
 - 법정 필수 인력 기준(정확한 숫자)은 병원 종별/연도별로 달라지므로 단정적인 법조문 숫자를 임의로 만들어내지 말고,
   "최신 의료법 시행규칙 확인 필요"와 같이 일반적 수준에서만 언급하세요.
@@ -45,8 +54,9 @@ SYSTEM_INSTRUCTION = f"""당신은 한국 병원 개원 및 경영 컨설팅 전
   "recommendations": ["구체적 개선 권장 조치 (문장형, 3~6개)"],
   "org_structure": [
     {{
-      "title": "직책/부서명 (예: 원장, 간호부장, 원무행정팀)",
-      "dept_type": "위 목록 중 하나",
+      "title": "직책/부서명 (예: 원장, 간호부장, 외래간호팀)",
+      "dept_type": "위 dept_type 목록 중 하나",
+      "kind": "직급 또는 부서",
       "parent_title": "상위 직책/부서명 (최상위는 null)",
       "headcount": 숫자(정수),
       "note": "간단한 역할 설명"
@@ -112,7 +122,7 @@ if diagnosis:
     structure = diagnosis.get("org_structure", [])
     if structure:
         st.dataframe(
-            [{"직책/부서명": s.get("title"), "부서유형": s.get("dept_type"),
+            [{"직책/부서명": s.get("title"), "구분": s.get("kind", "부서"), "부서유형": s.get("dept_type"),
               "상위조직": s.get("parent_title") or "(최상위)", "인원": s.get("headcount"),
               "비고": s.get("note", "")} for s in structure],
             use_container_width=True, hide_index=True,
@@ -129,6 +139,7 @@ if diagnosis:
                     "id": node_id,
                     "title": item.get("title", "(제목없음)"),
                     "dept_type": item.get("dept_type") if item.get("dept_type") in DEPT_TYPE_LIST else "경영/관리",
+                    "kind": item.get("kind") if item.get("kind") in NODE_KINDS else "부서",
                     "parent_id": None,
                     "headcount": int(item.get("headcount") or 0),
                     "note": item.get("note", ""),

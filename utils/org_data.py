@@ -70,54 +70,72 @@ class NodeSeed:
     parent_key: str | None
     headcount_hint: int = 1
     note: str = ""
+    kind: str = "부서"    # "직급"(책임자 1인) | "부서"(실무 팀 — 명단 다수)
 
 
 def base_template(hospital_type: str, beds: int) -> list[NodeSeed]:
-    """병원 종별 + 병상수 기준으로 기본 조직 시드를 반환."""
+    """병원 종별 + 병상수 기준으로 기본 조직 시드를 반환.
+
+    - kind="직급": 원장/부서장 등 책임자 1인 자리 (조직도에 이름 기입란 표시)
+    - kind="부서": 실무 인력이 다수 배치되는 팀/과 (조직도에 명단 기입 그리드 표시)
+    """
     nodes: list[NodeSeed] = [
-        NodeSeed("director", "원장", "경영/관리", None, 1, "최고 의사결정권자"),
+        NodeSeed("director", "원장", "경영/관리", None, 1, "최고 의사결정권자", kind="직급"),
     ]
 
     if hospital_type == "의원":
         nodes += [
-            NodeSeed("nursing", "간호팀", "간호", "director", max(2, beds // 5 or 2)),
-            NodeSeed("front_desk", "원무/행정팀", "행정/원무", "director", 2),
+            NodeSeed("nursing", "간호팀", "간호", "director", max(2, beds // 5 or 2), kind="부서"),
+            NodeSeed("front_desk", "원무/행정팀", "행정/원무", "director", 2, kind="부서"),
         ]
         return nodes
 
-    # 병원급 이상 공통: 부원장/진료부 도입
+    # 병원급 이상 공통: 부원장/진료부장/간호부장/원무행정부장 도입 (모두 "직급")
     nodes += [
         NodeSeed("vice_director", "부원장(진료부장)", "경영/관리", "director", 1,
-                  "병상 30개 이상부터 원장 업무 분담을 위해 도입 권장"),
-        NodeSeed("medical_dept", "진료부", "진료", "vice_director", 0, "각 전문과목 통합 관리"),
-        NodeSeed("nursing_dept", "간호부", "간호", "vice_director", 0, "간호부서장 1인 + 병동/외래 파트"),
-        NodeSeed("admin_dept", "원무행정부", "행정/원무", "director", 0, "원무/보험심사/총무/인사 총괄"),
+                  "병상 30개 이상부터 원장 업무 분담을 위해 도입 권장", kind="직급"),
+        NodeSeed("medical_dept", "진료부장", "진료", "vice_director", 1, "각 전문과목 진료 총괄", kind="직급"),
+        NodeSeed("nursing_dept", "간호부장", "간호", "vice_director", 1, "병동/외래/수술실 간호 인력 총괄", kind="직급"),
+        NodeSeed("admin_dept", "원무행정부장", "행정/원무", "director", 1, "원무/심사/총무/시설 총괄", kind="직급"),
+    ]
+
+    # 간호부: 외래 / 병동 / 수술실 3개 실무 팀으로 세분화
+    nodes += [
+        NodeSeed("nursing_outpatient", "외래간호팀", "간호", "nursing_dept",
+                  max(2, round(beds * 0.05)), "외래 진료 간호 지원", kind="부서"),
+        NodeSeed("nursing_ward", "병동간호팀", "간호", "nursing_dept",
+                  max(3, round(beds * 0.35)), "입원 병동 간호 담당", kind="부서"),
+        NodeSeed("nursing_or", "수술실간호팀", "간호", "nursing_dept", 2, "수술/처치실 간호 담당", kind="부서"),
     ]
 
     if hospital_type in ("병원", "종합병원", "요양병원", "한방병원"):
         nodes += [
-            NodeSeed("pharmacy", "약제팀", "약제/영양", "admin_dept", 1),
-            NodeSeed("nutrition", "영양팀", "약제/영양", "admin_dept", 1),
-            NodeSeed("facility", "시설관리팀", "시설/지원", "admin_dept", 1),
+            NodeSeed("registration_review", "원무&심사팀", "행정/원무", "admin_dept", 3,
+                      "접수/수납/보험청구·심사 전담 — 삭감 관리 핵심 부서", kind="부서"),
+            NodeSeed("general_affairs", "총무팀", "행정/원무", "admin_dept", 2, "인사/노무/구매/문서 관리", kind="부서"),
+            NodeSeed("facility", "시설관리팀", "시설/지원", "admin_dept", 1, kind="부서"),
+            NodeSeed("pharmacy", "약제팀", "약제/영양", "admin_dept", 1, kind="부서"),
+            NodeSeed("nutrition", "영양팀", "약제/영양", "admin_dept", 1, kind="부서"),
         ]
 
     if hospital_type == "종합병원" or beds >= 100:
         nodes += [
-            NodeSeed("radiology", "영상의학팀", "진단/검사", "medical_dept", 1),
-            NodeSeed("lab", "진단검사팀", "진단/검사", "medical_dept", 1),
-            NodeSeed("insurance_review", "보험심사팀", "행정/원무", "admin_dept", 2,
-                      "청구심사 전담 — 삭감 관리 핵심 부서"),
+            NodeSeed("care_support_head", "진료지원팀장", "진단/검사", "medical_dept", 1,
+                      "영상/검사 등 진료지원 부서 총괄", kind="직급"),
+            NodeSeed("radiology", "방사선과", "진단/검사", "care_support_head", 2, kind="부서"),
+            NodeSeed("lab", "임상병리과", "진단/검사", "care_support_head", 2, kind="부서"),
         ]
 
     if hospital_type == "요양병원":
         nodes += [
-            NodeSeed("rehab", "재활치료팀", "진료", "medical_dept", 1),
-            NodeSeed("care_team", "요양보호팀", "간호", "nursing_dept", 0, "간병 등급 연동 인력 배치 필요"),
+            NodeSeed("rehab", "재활치료팀", "진료", "medical_dept", 2, kind="부서"),
+            NodeSeed("care_team", "요양보호팀", "간호", "nursing_dept",
+                      max(3, round(beds * 0.3)), "간병 등급 연동 인력 배치 필요", kind="부서"),
         ]
 
     if hospital_type == "한방병원":
         nodes += [
-            NodeSeed("physical_therapy", "물리치료팀", "진료", "medical_dept", 1),
+            NodeSeed("physical_therapy", "물리치료팀", "진료", "medical_dept", 2, kind="부서"),
         ]
 
     return nodes

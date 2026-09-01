@@ -10,6 +10,7 @@ Node 스키마:
     "id": str,              # 고유 키
     "title": str,           # 직책/부서명 (예: "간호부장", "원무행정부")
     "dept_type": str,       # DEPT_TYPE_LIST 중 하나
+    "kind": str,             # "직급"(관리자/책임자 1인 — 이름 기입란 1~3줄) | "부서"(실무 팀 — 명단 기입 그리드)
     "parent_id": str|None,  # 상위 노드 id (None = 최상위)
     "headcount": int,       # 배치 인원 수
     "note": str,            # 비고
@@ -21,6 +22,8 @@ import uuid
 import pandas as pd
 
 from utils.org_data import DEPT_TYPE_COLOR, SPAN_OF_CONTROL, base_template
+
+NODE_KINDS = ["직급", "부서"]
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +46,7 @@ def build_tree_from_template(hospital_type: str, beds: int) -> dict:
             "id": node_id,
             "title": seed.title,
             "dept_type": seed.dept_type,
+            "kind": getattr(seed, "kind", "부서"),
             "parent_id": None,  # 아래에서 매핑
             "headcount": seed.headcount_hint,
             "note": seed.note,
@@ -54,12 +58,13 @@ def build_tree_from_template(hospital_type: str, beds: int) -> dict:
 
 
 def add_node(tree: dict, title: str, dept_type: str, parent_id: str | None,
-             headcount: int = 1, note: str = "") -> str:
+             headcount: int = 1, note: str = "", kind: str = "부서") -> str:
     node_id = new_node_id()
     tree[node_id] = {
         "id": node_id,
         "title": title,
         "dept_type": dept_type,
+        "kind": kind if kind in NODE_KINDS else "부서",
         "parent_id": parent_id,
         "headcount": headcount,
         "note": note,
@@ -164,6 +169,7 @@ def tree_to_dataframe(tree: dict) -> pd.DataFrame:
         depth = len(get_ancestors(tree, node["id"]))
         rows.append({
             "직책/부서명": node["title"],
+            "구분": node.get("kind", "부서"),
             "부서유형": node["dept_type"],
             "상위조직": parent_title,
             "조직단계": depth + 1,
@@ -181,28 +187,73 @@ def total_headcount(tree: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Graphviz 렌더링
+# Graphviz 렌더링 (HTML-like 라벨 — 직급: 이름 기입란 / 부서: 명단 기입 그리드)
 # ---------------------------------------------------------------------------
 
-def tree_to_dot(tree: dict, title: str = "") -> str:
-    """Graphviz DOT 언어 문자열 생성 (st.graphviz_chart에 바로 전달 가능)."""
+ROSTER_GRID_COLS = 8   # 부서 노드 하단 명단 그리드 — 열 수
+ROSTER_GRID_ROWS = 2   # 부서 노드 하단 명단 그리드 — 행 수 (총 약 16칸)
+MAX_NAME_LINES = 3      # 직급 노드에 표시할 최대 이름 기입 줄 수
+
+
+def _esc_html(text: str) -> str:
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _node_html_label(node: dict) -> str:
+    """노드 종류(직급/부서)에 따라 Graphviz HTML-like 테이블 라벨을 생성."""
+    color = DEPT_TYPE_COLOR.get(node["dept_type"], "#334155")
+    title = _esc_html(node["title"])
+    kind = node.get("kind", "부서")
+
+    if kind == "직급":
+        name_lines = max(1, min(node.get("headcount", 1) or 1, MAX_NAME_LINES))
+        title_row = (f'<TR><TD ALIGN="CENTER" BGCOLOR="{color}" CELLPADDING="6">'
+                     f'<FONT COLOR="white" POINT-SIZE="13"><B>{title}</B></FONT></TD></TR>')
+        name_rows = "".join(
+            '<TR><TD ALIGN="CENTER" BGCOLOR="#F9FAFB" CELLPADDING="4">'
+            '<FONT COLOR="#374151" POINT-SIZE="10">성명: __________________</FONT></TD></TR>'
+            for _ in range(name_lines)
+        )
+        return (f'<TABLE BORDER="1" COLOR="{color}" CELLBORDER="0" CELLSPACING="0">'
+                f'{title_row}{name_rows}</TABLE>')
+
+    # kind == "부서": 제목 + 명단 기입 그리드(약 16칸)
+    hc = node.get("headcount", 0)
+    hc_label = f" ({hc}명)" if hc else ""
+    title_row = (f'<TR><TD COLSPAN="{ROSTER_GRID_COLS}" ALIGN="CENTER" BGCOLOR="{color}" CELLPADDING="6">'
+                 f'<FONT COLOR="white" POINT-SIZE="13"><B>{title}{hc_label}</B></FONT></TD></TR>')
+    grid_rows = ""
+    for _ in range(ROSTER_GRID_ROWS):
+        cells = "".join(
+            '<TD WIDTH="20" HEIGHT="16" BGCOLOR="white"></TD>' for _ in range(ROSTER_GRID_COLS)
+        )
+        grid_rows += f"<TR>{cells}</TR>"
+    return (f'<TABLE BORDER="1" COLOR="{color}" CELLBORDER="1" CELLSPACING="2" CELLPADDING="0">'
+            f'{title_row}{grid_rows}</TABLE>')
+
+
+def tree_to_dot(tree: dict, title: str = "", dpi: int = 150) -> str:
+    """Graphviz DOT 언어 문자열 생성 (st.graphviz_chart / PNG 렌더링에 바로 사용 가능).
+
+    - kind="직급" 노드: 직책명 + 이름 기입란(빈 줄)
+    - kind="부서" 노드: 부서명(인원수) + 명단을 손으로 적을 수 있는 빈 칸 그리드
+    """
     lines = [
         "digraph OrgChart {",
         '  rankdir="TB";',
-        '  bgcolor="transparent";',
-        '  node [shape=box, style="rounded,filled", fontname="NanumGothic", '
-        'fontsize=12, fontcolor="white", margin="0.18,0.12"];',
-        '  edge [color="#94A3B8", arrowsize=0.7];',
+        '  bgcolor="white";',
+        f'  dpi="{dpi}";',
+        '  nodesep="0.35"; ranksep="0.55";',
+        '  node [shape=plaintext, fontname="NanumGothic"];',
+        '  edge [color="#94A3B8", arrowsize=0.7, penwidth=1.2];',
     ]
     if title:
-        lines.append(f'  labelloc="t"; label="{_esc(title)}"; fontsize=16; fontname="NanumGothic";')
+        lines.append(f'  labelloc="t"; label="{_esc(title)}"; fontsize=18; fontname="NanumGothic";')
 
     for node in tree.values():
-        color = DEPT_TYPE_COLOR.get(node["dept_type"], "#334155")
-        label = _esc(node["title"])
-        if node.get("headcount"):
-            label += f"\\n({node['headcount']}명)"
-        lines.append(f'  "{node["id"]}" [label="{label}", fillcolor="{color}"];')
+        html_label = _node_html_label(node)
+        lines.append(f'  "{node["id"]}" [label=<{html_label}>];')
 
     for node in tree.values():
         if node["parent_id"] and node["parent_id"] in tree:

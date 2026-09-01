@@ -18,13 +18,9 @@ from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_CONNECTOR
-from pptx.enum.text import PP_ALIGN
 
 from utils.org_data import DEPT_TYPE_COLOR, DIAGNOSTIC_CHECKPOINTS
-from utils.org_chart_builder import (
-    get_children, get_root_nodes, tree_to_dataframe, total_headcount,
-)
+from utils.org_chart_builder import tree_to_dataframe, total_headcount, tree_to_dot
 
 BRAND_NAME = "주식회사 메디엄"
 
@@ -93,32 +89,34 @@ def build_excel_report(tree: dict, hospital_info: dict, ai_diagnosis: dict | Non
 
 
 # ---------------------------------------------------------------------------
-# PPTX 내보내기 (편집 가능한 조직도 슬라이드)
+# Graphviz 렌더링 공용 헬퍼
 # ---------------------------------------------------------------------------
 
-def _compute_layout(tree: dict) -> dict:
-    """각 노드에 (slot_index, depth)를 부여하는 트리 레이아웃 계산."""
-    positions: dict[str, tuple[float, int]] = {}
-    leaf_counter = [0]
+def render_dot_to_png(dot_str: str, dpi: int = 200) -> bytes | None:
+    """DOT 문자열을 PNG 바이트로 렌더링. 서버에 Graphviz 바이너리가 없으면 None."""
+    try:
+        import graphviz
+        src = graphviz.Source(dot_str)
+        return src.pipe(format="png")
+    except Exception:
+        return None
 
-    def assign(node_id: str, depth: int) -> float:
-        children = get_children(tree, node_id)
-        if not children:
-            x = leaf_counter[0]
-            leaf_counter[0] += 1
-            positions[node_id] = (x, depth)
-            return x
-        xs = [assign(c["id"], depth + 1) for c in children]
-        x = sum(xs) / len(xs)
-        positions[node_id] = (x, depth)
-        return x
 
-    for root in get_root_nodes(tree):
-        assign(root["id"], 0)
+def _png_pixel_size(png_bytes: bytes) -> tuple[int, int]:
+    """PNG 헤더에서 (width, height) 픽셀 크기를 추출 (Pillow 의존성 없이)."""
+    import struct
+    if png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        return (1600, 900)  # fallback
+    width, height = struct.unpack(">II", png_bytes[16:24])
+    return (width, height)
 
-    total_slots = max(leaf_counter[0], 1)
-    return {"positions": positions, "total_slots": total_slots}
 
+# ---------------------------------------------------------------------------
+# PPTX 내보내기 — 조직도 슬라이드
+# ---------------------------------------------------------------------------
+# 조직도 자체는 Graphviz로 렌더링한 고해상도 이미지를 슬라이드에 삽입한다.
+# (앱 화면의 조직도 미리보기와 완전히 동일한 배치 · 명단 기입 그리드가 그대로 보존됨)
+# 대신 제목·부제·범례·안내 문구는 개별 텍스트 상자로 넣어 PowerPoint에서 자유롭게 수정할 수 있다.
 
 def build_pptx_org_chart(tree: dict, hospital_info: dict) -> bytes:
     prs = Presentation()
@@ -128,86 +126,57 @@ def build_pptx_org_chart(tree: dict, hospital_info: dict) -> bytes:
     slide = prs.slides.add_slide(blank_layout)
 
     # 제목
-    title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.25), Inches(12.3), Inches(0.7))
+    title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.25), Inches(12.3), Inches(0.6))
     tf = title_box.text_frame
     tf.text = f"{hospital_info.get('name', '병원')} 조직도"
-    tf.paragraphs[0].font.size = Pt(28)
+    tf.paragraphs[0].font.size = Pt(26)
     tf.paragraphs[0].font.bold = True
     tf.paragraphs[0].font.color.rgb = RGBColor(0x1F, 0x29, 0x37)
 
-    subtitle_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.85), Inches(12.3), Inches(0.4))
+    subtitle_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.8), Inches(12.3), Inches(0.4))
     stf = subtitle_box.text_frame
     stf.text = (f"{hospital_info.get('type', '')} · 병상 {hospital_info.get('beds', '-')}개 · "
                 f"{hospital_info.get('opening_stage', '')} · {BRAND_NAME} 작성")
     stf.paragraphs[0].font.size = Pt(12)
     stf.paragraphs[0].font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
 
+    content_left = Inches(0.4)
+    content_top = Inches(1.35)
+    content_width = Inches(12.5)
+    content_height = Inches(5.15)
+
     if not tree:
+        empty_box = slide.shapes.add_textbox(content_left, content_top, content_width, Inches(0.5))
+        empty_box.text_frame.text = "조직도가 비어 있습니다. 앱에서 노드를 추가한 뒤 다시 생성해주세요."
         return _presentation_to_bytes(prs)
 
-    layout = _compute_layout(tree)
-    positions = layout["positions"]
-    total_slots = layout["total_slots"]
+    dot_str = tree_to_dot(tree, title="", dpi=200)
+    png_bytes = render_dot_to_png(dot_str)
 
-    content_top = Inches(1.5)
-    content_height = Inches(5.6)
-    content_left = Inches(0.4)
-    content_width = Inches(12.5)
-
-    max_depth = max(d for _, d in positions.values())
-    n_levels = max_depth + 1
-
-    box_w = Emu(int(min(Inches(2.0), content_width / max(total_slots, 1) * 0.92)))
-    box_h = Inches(0.62)
-    level_gap = content_height / max(n_levels, 1)
-
-    shape_map = {}
-    for node_id, (slot_x, depth) in positions.items():
-        node = tree[node_id]
-        slot_width = content_width / total_slots
-        center_x = content_left + Emu(int(slot_width * (slot_x + 0.5)))
-        left = center_x - box_w / 2
-        top = content_top + Emu(int(level_gap * depth)) + Emu(int(level_gap - box_h) // 2)
-
-        shape = slide.shapes.add_shape(1, left, top, box_w, box_h)  # 1 = RECTANGLE
-        shape.fill.solid()
-        shape.fill.fore_color.rgb = _hex_to_rgb(DEPT_TYPE_COLOR.get(node["dept_type"], "#334155"))
-        shape.line.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        shape.line.width = Pt(0.75)
-        shape.shadow.inherit = False
-
-        label = node["title"]
-        if node.get("headcount"):
-            label += f" ({node['headcount']}명)"
-        tf = shape.text_frame
-        tf.word_wrap = True
-        tf.text = label
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        p.font.size = Pt(11)
-        p.font.bold = True
-        p.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-
-        shape_map[node_id] = shape
-
-    # 연결선 (부모 하단 중앙 -> 자식 상단 중앙)
-    for node_id, shape in shape_map.items():
-        parent_id = tree[node_id]["parent_id"]
-        if parent_id and parent_id in shape_map:
-            p_shape = shape_map[parent_id]
-            x1 = p_shape.left + p_shape.width // 2
-            y1 = p_shape.top + p_shape.height
-            x2 = shape.left + shape.width // 2
-            y2 = shape.top
-            connector = slide.shapes.add_connector(MSO_CONNECTOR.ELBOW, x1, y1, x2, y2)
-            connector.line.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
-            connector.line.width = Pt(1.25)
+    if png_bytes:
+        px_w, px_h = _png_pixel_size(png_bytes)
+        aspect = px_w / px_h if px_h else 1.6
+        if content_width / aspect <= content_height:
+            disp_w = content_width
+            disp_h = Emu(int(content_width / aspect))
+        else:
+            disp_h = content_height
+            disp_w = Emu(int(content_height * aspect))
+        left = content_left + Emu(int((content_width - disp_w) / 2))
+        top = content_top + Emu(int((content_height - disp_h) / 2))
+        slide.shapes.add_picture(io.BytesIO(png_bytes), left, top, width=disp_w, height=disp_h)
+    else:
+        warn_box = slide.shapes.add_textbox(content_left, content_top, content_width, Inches(0.6))
+        warn_box.text_frame.text = (
+            "⚠ 조직도 이미지를 생성하지 못했습니다. 서버에 Graphviz 바이너리가 설치되어 있는지 "
+            "(packages.txt) 확인해주세요."
+        )
 
     # 범례
-    legend_top = Inches(7.05)
+    legend_top = Inches(6.75)
     legend_left = Inches(0.4)
     for i, (dept_type, color) in enumerate(DEPT_TYPE_COLOR.items()):
-        x = legend_left + Inches(1.75) * i
+        x = legend_left + Inches(1.72) * i
         box = slide.shapes.add_shape(1, x, legend_top, Inches(0.16), Inches(0.16))
         box.fill.solid()
         box.fill.fore_color.rgb = _hex_to_rgb(color)
@@ -216,6 +185,11 @@ def build_pptx_org_chart(tree: dict, hospital_info: dict) -> bytes:
         label = slide.shapes.add_textbox(x + Inches(0.22), legend_top - Inches(0.05), Inches(1.5), Inches(0.3))
         label.text_frame.text = dept_type
         label.text_frame.paragraphs[0].font.size = Pt(9)
+
+    note_box = slide.shapes.add_textbox(Inches(0.4), Inches(7.1), Inches(12.5), Inches(0.3))
+    note_box.text_frame.text = "※ 실선 상자(직급)의 '성명' 및 명단 그리드(부서)는 인쇄 후 손으로 기입하는 용도입니다."
+    note_box.text_frame.paragraphs[0].font.size = Pt(9)
+    note_box.text_frame.paragraphs[0].font.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
 
     return _presentation_to_bytes(prs)
 
